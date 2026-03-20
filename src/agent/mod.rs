@@ -1,23 +1,19 @@
 // ============================================================
 // src/agent/mod.rs
 //
-// The agentic AI layer — three sub-modules:
+// Agentic AI layer — provider-agnostic investigation engine.
 //
-//   tools.rs  — every security engine wrapped as a Claude tool definition
-//               (the schema Claude sees when deciding what to call next)
-//
-//   client.rs — raw Claude API HTTP client with tool-use support
-//               (sends messages, receives tool_use blocks, returns results)
-//
-//   r#loop.rs — the agentic investigation loop
-//               (runs until Claude says stop or max_iterations reached)
-//
-// Why three files instead of one:
-//   Each layer has a single responsibility and can be tested independently.
-//   tools.rs has zero I/O. client.rs has zero business logic. loop.rs
-//   orchestrates both but owns no JSON schema definitions.
+//   provider.rs   — AiProvider trait + neutral ChatMessage types
+//   providers/    — one impl per AI backend
+//     claude.rs   — Anthropic Messages API
+//     openai.rs   — OpenAI Chat Completions (also Groq, Ollama, Azure)
+//   tools.rs      — security tool definitions + dispatch
+//   loop.rs       — investigation loop (uses &dyn AiProvider)
+//   client.rs     — kept for reference; superseded by providers/
 // ============================================================
 
 pub mod client;
+pub mod provider;
+pub mod providers;
 pub mod r#loop;
 pub mod tools;
