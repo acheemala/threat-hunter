@@ -8,6 +8,7 @@
 // Declare our modules — Rust needs to know these files exist
 mod agent;
 mod commands;
+mod db;
 mod ioc;
 mod network;
 mod process;
@@ -74,6 +75,12 @@ enum Commands {
 
     /// Run an autonomous AI-powered threat investigation (requires ANTHROPIC_API_KEY)
     Agent(commands::agent::AgentArgs),
+
+    /// Query persisted findings from previous hunts
+    Findings(commands::findings::FindingsArgs),
+
+    /// List previous hunt sessions
+    Hunts(commands::findings::HuntsArgs),
 }
 
 fn main() {
@@ -100,8 +107,10 @@ fn main() {
         Commands::Process(args) => commands::process::run(args),
         Commands::Network(args) => commands::network::run(args),
         Commands::Mitre(args)   => commands::mitre::run(args),
-        Commands::Report(args)  => commands::report::run(args),
-        Commands::Agent(args)   => commands::agent::run(args),
+        Commands::Report(args)   => commands::report::run(args),
+        Commands::Agent(args)    => commands::agent::run(args),
+        Commands::Findings(args) => commands::findings::run(args),
+        Commands::Hunts(args)    => commands::findings::run_hunts(args),
     };
 
     // If any subcommand returned an error, print it and exit with code 1

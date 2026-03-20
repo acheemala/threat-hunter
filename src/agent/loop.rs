@@ -3,49 +3,26 @@
 //
 // The agentic investigation loop.
 //
-// This is where "agentic" actually happens:
-//   - We do NOT pre-decide what to scan
-//   - We give Claude the initial findings and let IT decide
-//     which tool to call next, in what order, with what parameters
-//   - The loop runs until Claude stops calling tools (final text answer)
-//     or we hit max_iterations as a safety guard
+// This file is provider-agnostic. It works with any AI that
+// implements the AiProvider trait — Claude, OpenAI, Groq, Ollama.
 //
 // Loop structure:
-//
-//   1. Run initial scan of the target path
-//   2. Send initial findings + task to Claude
-//   3. Claude responds with tool_use blocks (or final text)
-//   4. For each tool_use: execute dispatch_tool(), append result to history
-//   5. Send updated history back to Claude
-//   6. Repeat from step 3
-//   7. When Claude returns only text: that is the final investigation report
-//
-// Why max_iterations:
-//   Without a cap, a confused model can loop indefinitely calling the
-//   same tools. 10 iterations = ~10 tool calls, which is more than enough
-//   to fully investigate a single host. Increase for deeper investigations.
-//
-// Why the system prompt matters:
-//   The system prompt is the only place we constrain Claude's behavior.
-//   It tells Claude: you are a threat analyst, not a chatbot. Be systematic.
-//   Call tools before drawing conclusions. Write ATT&CK IDs in your report.
+//   1. Send initial task + target to the AI
+//   2. AI responds with tool calls (or final text)
+//   3. Execute each tool call via dispatch_tool()
+//   4. Append results to history, send back to AI
+//   5. Repeat until AI returns only text (the final report)
+//   6. Safety exit at max_iterations
 // ============================================================
 
 use anyhow::{anyhow, Result};
 use colored::*;
-use serde_json::json;
+use std::sync::Arc;
 
-use super::client::{ClaudeClient, Message};
-use super::tools::{all_tools, dispatch_tool};
+use crate::agent::provider::{AiProvider, ChatContent, ChatMessage, ToolResult};
+use crate::agent::tools::{all_tools, dispatch_tool, extract_findings_from_tool_results};
+use crate::report::Finding;
 
-// ── System prompt ─────────────────────────────────────────────────────────────
-
-/// The system prompt is Claude's "job description" for this investigation.
-/// Key instructions:
-///   1. Systematic: always scan before concluding
-///   2. Correlated: connect filesystem + process + network findings
-///   3. Formal: use MITRE ATT&CK IDs in every finding
-///   4. Conservative: never assume clean — verify with tools
 const SYSTEM_PROMPT: &str = "\
 You are an expert threat analyst performing a live security investigation on a Linux system. \
 You have access to tools that read the real filesystem, running processes, and network connections.
@@ -65,34 +42,24 @@ When writing your final report:
 
 Do not speculate. Everything you state in the report must be backed by tool output you received.";
 
-// ── Public entry point ────────────────────────────────────────────────────────
-
 /// Run a full agentic investigation on `target_path`.
 ///
-/// `api_key`        — ANTHROPIC_API_KEY value
-/// `target_path`    — filesystem path to start the investigation
-/// `max_iterations` — safety cap on tool call rounds (default: 10)
-/// `verbose`        — if true, print each tool call and result to stdout
-///
-/// Returns the final investigation report as a String.
+/// Returns `(report_markdown, findings)`.
 pub async fn run_investigation(
-    api_key:        &str,
+    provider:       Arc<dyn AiProvider>,
     target_path:    &str,
     max_iterations: usize,
     verbose:        bool,
-) -> Result<String> {
-    let client = ClaudeClient::new(api_key);
-    let tools  = all_tools();
+) -> Result<(String, Vec<Finding>)> {
+    let tools = all_tools();
 
     println!(
-        "\n{} Starting agentic investigation on {}\n",
+        "\n{} Starting agentic investigation\n  Target:   {}\n  Provider: {}\n",
         "[AGENT]".bright_red().bold(),
-        target_path.yellow()
+        target_path.yellow(),
+        provider.display_name().cyan(),
     );
 
-    // ── Seed message: give Claude the task ───────────────────────────────────
-    // We don't pre-scan here — let Claude decide what to do first.
-    // This is the key difference from report.rs which runs all engines blindly.
     let seed = format!(
         "Perform a complete threat investigation on this Linux system. \
          Start by scanning the filesystem path '{}' and inspecting running processes. \
@@ -101,9 +68,9 @@ pub async fn run_investigation(
         target_path
     );
 
-    let mut history: Vec<Message> = vec![Message::user(seed)];
+    let mut history:  Vec<ChatMessage> = vec![ChatMessage::user(seed)];
+    let mut findings: Vec<Finding>     = Vec::new();
 
-    // ── Main agentic loop ─────────────────────────────────────────────────────
     for iteration in 1..=max_iterations {
         if verbose {
             println!(
@@ -114,29 +81,23 @@ pub async fn run_investigation(
             );
         }
 
-        // Send current history to Claude
-        let response = client.send(&history, &tools, SYSTEM_PROMPT).await?;
+        let response = provider.chat(&history, &tools, SYSTEM_PROMPT).await?;
 
-        // Append Claude's raw response to history so it sees its own tool calls
-        history.push(Message::assistant(response.raw_content));
-
-        // ── If Claude called tools: execute them ──────────────────────────────
+        // ── AI called tools ───────────────────────────────────────────────────
         if !response.tool_calls.is_empty() {
             println!(
-                "  {} Claude called {} tool(s):",
+                "  {} AI called {} tool(s):",
                 "→".bright_cyan(),
                 response.tool_calls.len()
             );
 
-            // Execute each tool call and collect results
-            // We batch all results into ONE user message (Claude API requirement:
-            // all tool_results for a given assistant turn must be in one user turn)
-            let mut result_blocks = Vec::new();
+            // Store the assistant's tool-call turn in history
+            history.push(ChatMessage::assistant_tool_calls(response.tool_calls.clone()));
+
+            let mut results: Vec<ToolResult> = Vec::new();
 
             for call in &response.tool_calls {
                 print!("    {} {}(", "⚙".yellow(), call.name.white().bold());
-
-                // Print the input args compactly
                 if let Some(obj) = call.input.as_object() {
                     let args: Vec<String> = obj.iter()
                         .map(|(k, v)| format!("{}={}", k, v))
@@ -145,11 +106,13 @@ pub async fn run_investigation(
                 }
                 println!(")");
 
-                // Execute the tool
                 let result = dispatch_tool(&call.name, &call.input);
 
+                findings.extend(extract_findings_from_tool_results(
+                    &call.name, &call.input, &result,
+                ));
+
                 if verbose {
-                    // Print first 200 chars of result to avoid flooding the terminal
                     let preview: String = result.chars().take(200).collect();
                     println!(
                         "      {} {}{}",
@@ -159,57 +122,52 @@ pub async fn run_investigation(
                     );
                 }
 
-                result_blocks.push(json!({
-                    "type":        "tool_result",
-                    "tool_use_id": call.id,
-                    "content":     result,
-                }));
+                results.push(ToolResult {
+                    tool_call_id: call.id.clone(),
+                    content:      result,
+                });
             }
 
-            // Append all tool results as a single user turn
-            history.push(Message {
-                role:    "user".into(),
-                content: json!(result_blocks),
-            });
-
-            // Continue the loop — Claude will process the results and decide next step
+            // Return all results as a single user turn
+            history.push(ChatMessage::tool_results(results));
             continue;
         }
 
-        // ── Claude returned only text: investigation complete ─────────────────
+        // ── AI returned text: investigation complete ──────────────────────────
         if let Some(ref report) = response.text {
             println!(
                 "\n{} Investigation complete after {} tool call round(s).\n",
                 "[✓]".green().bold(),
                 iteration - 1
             );
-            return Ok(report.clone());
+            return Ok((report.clone(), findings));
         }
 
-        // Edge case: empty response with no text and no tool calls
         return Err(anyhow!(
-            "Claude returned an empty response on iteration {}. \
+            "AI returned an empty response on iteration {}. \
              Check your API key and model availability.",
             iteration
         ));
     }
 
-    // Hit max_iterations — ask Claude to wrap up with what it has
+    // Hit max_iterations — force final report
     println!(
         "\n{} Reached max iterations ({}), requesting final report...\n",
         "[!]".yellow().bold(),
         max_iterations
     );
 
-    history.push(Message::user(
+    history.push(ChatMessage::user(
         "You have reached the investigation iteration limit. \
-         Write your final threat report now based on all the information you have gathered so far. \
+         Write your final threat report now based on all the information you have gathered. \
          Do not call any more tools."
     ));
 
-    let final_response = client.send(&history, &[], SYSTEM_PROMPT).await?;
+    let final_response = provider.chat(&history, &[], SYSTEM_PROMPT).await?;
 
-    final_response.text.ok_or_else(|| {
-        anyhow!("Claude did not return a final report after hitting max_iterations")
-    })
+    let report = final_response.text.ok_or_else(|| {
+        anyhow!("AI did not return a final report after hitting max_iterations")
+    })?;
+
+    Ok((report, findings))
 }

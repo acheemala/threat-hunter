@@ -20,6 +20,7 @@
 // ============================================================
 
 use serde_json::{json, Value};
+use crate::report::Finding;
 
 // ── Tool schema definition ────────────────────────────────────────────────────
 
@@ -409,6 +410,108 @@ fn tool_map_to_mitre(input: &Value) -> String {
         mapped.len(),
         serde_json::to_string_pretty(&mapped).unwrap_or_default()
     )
+}
+
+// ── Finding extraction ────────────────────────────────────────────────────────
+
+/// Convert tool results into structured `Finding` records for DB persistence.
+/// Called in the agentic loop after each tool invocation.
+/// Only scan_filesystem, inspect_processes, and check_network produce findings.
+pub fn extract_findings_from_tool_results(
+    tool_name: &str,
+    input:     &Value,
+    result:    &str,
+) -> Vec<Finding> {
+    if result.starts_with("No ") || result.starts_with("ERROR") {
+        return vec![];
+    }
+
+    match tool_name {
+        "scan_filesystem" => {
+            let path = input["path"].as_str().unwrap_or("unknown");
+            // The result is either "N suspicious files found:\n[json]" or "No suspicious files"
+            // We create one Finding per result line that contains a severity marker
+            if let Some(json_start) = result.find('[') {
+                if let Ok(arr) = serde_json::from_str::<Vec<Value>>(&result[json_start..]) {
+                    return arr.iter().filter_map(|item| {
+                        let severity = item["severity"].as_str()?.to_uppercase();
+                        if severity == "INFO" { return None; }
+                        let file_path = item["path"].as_str().unwrap_or(path);
+                        let anomalies = item["anomalies"].as_array()
+                            .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("; "))
+                            .unwrap_or_default();
+                        Some(Finding {
+                            severity,
+                            category:    "filesystem".into(),
+                            description: if anomalies.is_empty() {
+                                "Suspicious file detected".into()
+                            } else {
+                                anomalies
+                            },
+                            detail:      file_path.to_string(),
+                            mitre_id:    None,
+                            mitre_name:  None,
+                        })
+                    }).collect();
+                }
+            }
+            vec![]
+        }
+
+        "inspect_processes" => {
+            if let Some(json_start) = result.find('[') {
+                if let Ok(arr) = serde_json::from_str::<Vec<Value>>(&result[json_start..]) {
+                    return arr.iter().filter_map(|item| {
+                        if item["suspicious"].as_bool() != Some(true) { return None; }
+                        let severity = item["severity"].as_str().unwrap_or("MEDIUM").to_uppercase();
+                        let pid  = item["pid"].as_u64().unwrap_or(0);
+                        let name = item["name"].as_str().unwrap_or("unknown");
+                        let anomalies = item["anomalies"].as_array()
+                            .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("; "))
+                            .unwrap_or_default();
+                        Some(Finding {
+                            severity,
+                            category:    "process".into(),
+                            description: if anomalies.is_empty() {
+                                "Suspicious process detected".into()
+                            } else {
+                                anomalies
+                            },
+                            detail:      format!("PID {} ({})", pid, name),
+                            mitre_id:    None,
+                            mitre_name:  None,
+                        })
+                    }).collect();
+                }
+            }
+            vec![]
+        }
+
+        "check_network" => {
+            if let Some(json_start) = result.find('[') {
+                if let Ok(arr) = serde_json::from_str::<Vec<Value>>(&result[json_start..]) {
+                    return arr.iter().filter_map(|item| {
+                        let severity = item["severity"].as_str().unwrap_or("LOW").to_uppercase();
+                        if severity == "INFO" { return None; }
+                        let remote  = item["remote"].as_str().unwrap_or("unknown");
+                        let reason  = item["reason"].as_str().unwrap_or("suspicious connection");
+                        let process = item["process"].as_str().unwrap_or("unknown");
+                        Some(Finding {
+                            severity,
+                            category:    "network".into(),
+                            description: reason.to_string(),
+                            detail:      format!("{} ({})", remote, process),
+                            mitre_id:    None,
+                            mitre_name:  None,
+                        })
+                    }).collect();
+                }
+            }
+            vec![]
+        }
+
+        _ => vec![],
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

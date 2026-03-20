@@ -72,10 +72,17 @@ reqwest = { version = "0.12", features = ["json", "blocking"] }
 
 # Async runtime — reqwest async needs a Tokio executor
 # We use #[tokio::main] only in the agent subcommand entry point
-tokio = { version = "1.37", features = ["rt", "rt-multi-thread", "macros"] }
+tokio = { version = "1.37", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
 
 # UUID for correlating tool_use call IDs between request and response
 uuid = { version = "1.8", features = ["v4"] }
+
+# ── Persistence layer (Phase 1) ───────────────────────────────────────────────
+# Async SQLite via sqlx — compile-time query checking, tokio runtime
+sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-native-tls", "macros", "chrono", "uuid"] }
+
+# Async trait support — needed for AiProvider trait with async methods
+async-trait = "0.1"
 
 # ─── Dev-only dependencies (tests, benchmarks) ───────────────────────────────
 

@@ -11,3 +11,4 @@ pub mod process;
 pub mod mitre;
 pub mod report;
 pub mod agent;
+pub mod findings;
