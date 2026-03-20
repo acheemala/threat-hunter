@@ -1,0 +1,18 @@
+blank_issues_enabled: false
+
+contact_links:
+  - name: "🙋 Join the Learning Program"
+    url: https://github.com/your-handle/threathunter/discussions/new?category=introductions
+    about: New here? Introduce yourself and claim your first issue.
+
+  - name: "🤔 Stuck? Ask for help"
+    url: https://github.com/your-handle/threathunter/discussions/new?category=stuck
+    about: Post in Discussions before spending hours going in the wrong direction.
+
+  - name: "💡 Got an idea?"
+    url: https://github.com/your-handle/threathunter/discussions/new?category=ideas
+    about: Share feature ideas in Discussions before opening an issue.
+
+  - name: "📖 Learning Program guide"
+    url: https://github.com/your-handle/threathunter/blob/main/LEARNING_PROGRAM.md
+    about: Full 6-month and 12-month curriculum with week-by-week tasks.
