@@ -269,17 +269,9 @@ rm -f /tmp/update.sh /tmp/eicar.com
 
 ---
 
-## Learning Program
+## Contributing
 
-Learn Rust, security engineering, and agentic AI by contributing to this project — one PR at a time.
-
-- **3 tracks:** Rust + CLI / Security Engineering / Agentic AI
-- **2 paces:** 6-month or 12-month
-- **No experience required**
-
-→ Full curriculum: [LEARNING_PROGRAM.md](LEARNING_PROGRAM.md)
-→ How to contribute: [CONTRIBUTING.md](CONTRIBUTING.md)
-→ Join: open a [Discussion → Introductions](../../discussions)
+Pull requests welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and guidelines.
 
 ---
 
